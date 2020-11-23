@@ -229,16 +229,18 @@ class server:
     def start(self):
         self.http_server = HTTPServer(self.application, xheaders=True)
         self.http_server.listen(self.cfg["options"].port)
-        IOLoop.instance().start()
+        IOLoop.current().start()
     def stop(self):
         self.http_server.stop()
-        IOLoop.instance().stop()
+        IOLoop.current().stop()
 
 def get_condor_version():
      p = subprocess.Popen("condor_version", shell=True, stdout=subprocess.PIPE)
      out = p.communicate()[0]
      return out.decode().split(" ")[1]
 
+from tornado.process import Subprocess
+@tornado.gen.coroutine
 def condor_q(cfg):
     """Get the status of the HTCondor queue"""
     logger.info('condor_q')
@@ -258,8 +260,8 @@ def condor_q(cfg):
     try:
         cmd = ' '.join(cmd)
         print(cmd)
-        p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-        output = p.communicate()[0]
+        p = Subprocess(cmd, shell=True, stdout=Subprocess.STREAM)
+        output = yield p.stdout.read_until_close()
         for line in output.decode().splitlines():
             logger.debug(line)
             try:
@@ -288,18 +290,16 @@ def condor_q(cfg):
             if state is not None:
                 cfg['state'] = state
             cfg['condor_q'] = False
-            IOLoop.instance().call_later(cfg['options'].delay,
+            IOLoop.current().call_later(cfg['options'].delay,
                                          partial(condor_q_helper, cfg))
-        IOLoop.instance().add_callback(cb)
+        IOLoop.current().add_callback(cb)
 
 def condor_q_helper(cfg):
-    """Helper to launch condor_q in a separate thread"""
+    """Helper to launch condor_q in a coroutine"""
     # make sure we're not already running a condor_q
     if not cfg['condor_q']:
         cfg['condor_q'] = True
-        t = threading.Thread(target=partial(condor_q, cfg))
-        t.daemon = True
-        t.start()
+        condor_q(cfg)
 
 
 def main():
@@ -346,7 +346,7 @@ def main():
         logging.basicConfig(**kwargs)
 
         # load condor_q
-        IOLoop.instance().call_later(5, partial(condor_q_helper, cfg))
+        IOLoop.current().call_later(5, partial(condor_q_helper, cfg))
 
         # setup server
         s = server(cfg)
